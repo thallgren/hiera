@@ -1,0 +1,34 @@
+apiVersion: v1
+data:
+  data.yaml: |
+    interpolate_a: 'This is %{a}'
+
+    hash:
+      one: 1
+      two: two
+      three:
+        a: A
+        c: C
+
+    array:
+      - one
+      - two
+      - three
+
+    sense: Don't reveal this
+
+    lookup_options:
+      hash:
+        merge: deep
+      sense:
+        convert_to: Sensitive
+  variables.yaml: |
+    a: value of a
+    b: value of b
+    c:
+      a: value of c.a
+      b: value of c.b
+kind: ConfigMap
+metadata:
+  creationTimestamp: null
+  name: hieradata

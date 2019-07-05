@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hiera-deployment
+  labels:
+    app: hiera
+spec:
+  selector:
+    matchLabels:
+      app: hiera
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: hiera
+      annotations:
+        # Ensure updates every time configmap.yaml changes
+        "checksum/config": '{{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}'
+    spec:
+      containers:
+        - name: hieraserver
+          image: thallgren/hiera:0.1.2
+          workingDir: /var/hiera
+          command:
+            - /bin/hieraserver
+            - --port
+            - "8080"
+            - --variables
+            - variables.yaml
+          volumeMounts:
+            - name: hiera-data
+              mountPath: /var/hiera
+          ports:
+            - containerPort: 8080
+      volumes:
+        - name: hiera-data
+          configMap:
+            name: hieradata

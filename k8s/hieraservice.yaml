@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: hiera-service
+  labels:
+    app: hiera
+spec:
+  ports:
+    - port: 1323
+      targetPort: 8080
+  selector:
+    app: hiera
