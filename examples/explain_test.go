@@ -8,19 +8,16 @@ import (
 
 	"github.com/lyraproj/hiera/hiera"
 	"github.com/lyraproj/hiera/hieraapi"
-	"github.com/lyraproj/hiera/internal"
 	"github.com/lyraproj/hiera/provider"
-	"github.com/lyraproj/pcore/px"
-	"github.com/lyraproj/pcore/types"
 )
 
 // TestExplain shows how to provide an explainer to the invocation used when performing a lookup
 // and to extract its result.
 func TestExplain(t *testing.T) {
-	configOptions := map[string]px.Value{hieraapi.HieraRoot: types.WrapString(`testdata`)}
-	hiera.DoWithParent(context.Background(), provider.ConfigLookupKey, configOptions, func(c px.Context) {
+	configOptions := map[string]string{hieraapi.HieraRoot: `testdata`}
+	hiera.DoWithParent(context.Background(), provider.ConfigLookupKey, configOptions, func(hs hieraapi.Session) {
 		// The scope type from the scope_test.go file is reused.
-		s := scope{
+		s := map[string]interface{}{
 			`a`: `the "a" string`,
 			`b`: 42,
 			`c`: map[string]int{`x`: 10, `y`: 20}}
@@ -29,7 +26,7 @@ func TestExplain(t *testing.T) {
 		explainer := explain.NewExplainer(false, false)
 
 		// Perform a lookup where the scope and explainer are included in the invocation
-		result := hiera.Lookup(internal.NewInvocation(c, s, explainer), `ipl_c`, nil, nil)
+		result := hiera.Lookup(hs.Invocation(s, explainer), `ipl_c`, nil, nil)
 		if result == nil || `x = 10, y = 20` != result.String() {
 			t.Fatalf("unexpected result %v", result)
 		}
@@ -48,8 +45,8 @@ func TestExplain(t *testing.T) {
             Found key: "x" value: 10
           Sub key: "y"
             Found key: "y" value: 20
-        Found key: "ipl_c" value: 'x = 10, y = 20'
-    Merged result: 'x = 10, y = 20'`
+        Found key: "ipl_c" value: "x = 10, y = 20"
+    Merged result: "x = 10, y = 20"`
 
 		actualExplanation := explainer.String()
 		if expectedExplanation != explainer.String() {
@@ -60,9 +57,9 @@ func TestExplain(t *testing.T) {
 
 // TestExplain_withOptions shows how to configure the Explainer to include the lookup of the lookup_options
 func TestExplain_withOptions(t *testing.T) {
-	configOptions := map[string]px.Value{hieraapi.HieraRoot: types.WrapString(`testdata`)}
-	hiera.DoWithParent(context.Background(), provider.ConfigLookupKey, configOptions, func(c px.Context) {
-		s := scope{
+	configOptions := map[string]string{hieraapi.HieraRoot: `testdata`}
+	hiera.DoWithParent(context.Background(), provider.ConfigLookupKey, configOptions, func(hs hieraapi.Session) {
+		s := map[string]interface{}{
 			`a`: `the "a" string`,
 			`b`: 42,
 			`c`: map[string]int{`x`: 10, `y`: 20}}
@@ -71,7 +68,7 @@ func TestExplain_withOptions(t *testing.T) {
 		explainer := explain.NewExplainer(true, false)
 
 		// Perform a lookup where the scope and explainer are included in the invocation
-		result := hiera.Lookup(internal.NewInvocation(c, s, explainer), `ipl_c`, nil, nil)
+		result := hiera.Lookup(hs.Invocation(s, explainer), `ipl_c`, nil, nil)
 		if result == nil || `x = 10, y = 20` != result.String() {
 			t.Fatalf("unexpected result %v", result)
 		}
@@ -100,8 +97,8 @@ Searching for "ipl_c"
             Found key: "x" value: 10
           Sub key: "y"
             Found key: "y" value: 20
-        Found key: "ipl_c" value: 'x = 10, y = 20'
-    Merged result: 'x = 10, y = 20'`
+        Found key: "ipl_c" value: "x = 10, y = 20"
+    Merged result: "x = 10, y = 20"`
 
 		actualExplanation := explainer.String()
 		if expectedExplanation != explainer.String() {
@@ -113,9 +110,9 @@ Searching for "ipl_c"
 // TestExplain_withOnlyOptions shows how to configure the Explainer to only include the lookup of the lookup_options
 // and exclude the lookup of the actual value
 func TestExplain_withOnlyOptions(t *testing.T) {
-	configOptions := map[string]px.Value{hieraapi.HieraRoot: types.WrapString(`testdata`)}
-	hiera.DoWithParent(context.Background(), provider.ConfigLookupKey, configOptions, func(c px.Context) {
-		s := scope{
+	configOptions := map[string]string{hieraapi.HieraRoot: `testdata`}
+	hiera.DoWithParent(context.Background(), provider.ConfigLookupKey, configOptions, func(hs hieraapi.Session) {
+		s := map[string]interface{}{
 			`a`: `the "a" string`,
 			`b`: 42,
 			`c`: map[string]int{`x`: 10, `y`: 20}}
@@ -124,7 +121,7 @@ func TestExplain_withOnlyOptions(t *testing.T) {
 		explainer := explain.NewExplainer(true, true)
 
 		// Perform a lookup where the scope and explainer are included in the invocation
-		result := hiera.Lookup(internal.NewInvocation(c, s, explainer), `ipl_c`, nil, nil)
+		result := hiera.Lookup(hs.Invocation(s, explainer), `ipl_c`, nil, nil)
 		if result == nil || `x = 10, y = 20` != result.String() {
 			t.Fatalf("unexpected result %v", result)
 		}

@@ -19,19 +19,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lyraproj/dgo/dgo"
+	"github.com/lyraproj/dgo/loader"
+	"github.com/lyraproj/dgo/streamer"
+	"github.com/lyraproj/dgo/vf"
 	"github.com/lyraproj/hiera/hieraapi"
 	"github.com/lyraproj/hierasdk/hiera"
-	"github.com/lyraproj/pcore/px"
-	"github.com/lyraproj/pcore/serialization"
-	"github.com/lyraproj/pcore/types"
 	log "github.com/sirupsen/logrus"
 )
-
-// a pluginLoader loads plugins that matches specific hierarchy entries
-type pluginLoader struct {
-	px.DefiningLoader
-	he hieraapi.Entry
-}
 
 // a plugin corresponds to a loaded process
 type plugin struct {
@@ -58,13 +53,6 @@ func KillPlugins() {
 	allPlugins.stopAll()
 }
 
-// NewPluginLoader returns a loader that is capable of discovered plugins that matches the given hierarchy entry. If
-// such plugins are found, the will be added to the root loader. The loaded entry and the corresponding executable
-// will be kept alive for until this executable terminates.
-func NewPluginLoader(parent px.Loader, he hieraapi.Entry) px.DefiningLoader {
-	return &pluginLoader{DefiningLoader: px.NewParentedLoader(parent), he: he}
-}
-
 // stopAll will stop all plugins that this registry is aware of and empty the registry
 func (r *pluginRegistry) stopAll() {
 	r.lock.Lock()
@@ -78,7 +66,7 @@ func (r *pluginRegistry) stopAll() {
 
 // startPlugin will start the plugin loaded from the given path and register the functions that it makes available
 // with the given loader.
-func (r *pluginRegistry) startPlugin(c px.Context, path string, loader px.DefiningLoader) {
+func (r *pluginRegistry) startPlugin(path string) dgo.Value {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
@@ -87,7 +75,7 @@ func (r *pluginRegistry) startPlugin(c px.Context, path string, loader px.Defini
 	if r.plugins != nil {
 		p, ok = r.plugins[path]
 		if ok {
-			return
+			return p.functionMap()
 		}
 	}
 
@@ -190,7 +178,7 @@ func (r *pluginRegistry) startPlugin(c px.Context, path string, loader px.Defini
 	p.initialize(meta)
 	r.plugins[path] = p
 
-	p.registerFunctions(c, loader)
+	return p.functionMap()
 }
 
 func (p *plugin) kill() {
@@ -245,10 +233,10 @@ func (p *plugin) initialize(meta map[string]interface{}) {
 	}
 }
 
-type luDispatch func(string) px.DispatchCreator
+type luDispatch func(string) dgo.Function
 
-// registerFunctions will register functions found in meta-info with the given loader.
-func (p *plugin) registerFunctions(c px.Context, loader px.DefiningLoader) {
+func (p *plugin) functionMap() dgo.Value {
+	m := vf.MutableMap()
 	for k, v := range p.functions {
 		names := v.([]interface{})
 		var df luDispatch
@@ -262,65 +250,47 @@ func (p *plugin) registerFunctions(c px.Context, loader px.DefiningLoader) {
 		}
 		for _, x := range names {
 			n := x.(string)
-			f := px.BuildFunction(n, nil, []px.DispatchCreator{df(n)})
-			loader.SetEntry(px.NewTypedName(px.NsFunction, n), px.NewLoaderEntry(f.Resolve(c), nil))
+			m.Put(n, df(n))
 		}
 	}
+	return loader.Multiple(m)
 }
 
-func (p *plugin) dataDigDispatch(name string) px.DispatchCreator {
-	return func(d px.Dispatch) {
-		d.Param(`Hiera::Context`)
-		d.Param(`Hiera::Key`)
-		d.Function(func(c px.Context, args []px.Value) px.Value {
-			params := makeOptions(args[0].(hieraapi.ServerContext))
-			key := args[1].(hieraapi.Key)
-			jp, err := json.Marshal(key.Parts())
-			if err != nil {
-				panic(err)
-			}
-			params.Add(`key`, string(jp))
-			return p.callPlugin(`data_dig`, name, params)
-		})
-	}
+func (p *plugin) dataDigDispatch(name string) dgo.Function {
+	return vf.Value(func(pc hiera.ProviderContext, key dgo.Array) dgo.Value {
+		params := makeOptions(pc)
+		jp := streamer.MarshalJSON(key, nil)
+		params.Add(`key`, string(jp))
+		return p.callPlugin(`data_dig`, name, params)
+	}).(dgo.Function)
 }
 
-func (p *plugin) dataHashDispatch(name string) px.DispatchCreator {
-	return func(d px.Dispatch) {
-		d.Param(`Hiera::Context`)
-		d.Function(func(c px.Context, args []px.Value) px.Value {
-			return p.callPlugin(`data_hash`, name, makeOptions(args[0].(hieraapi.ServerContext)))
-		})
-	}
+func (p *plugin) dataHashDispatch(name string) dgo.Function {
+	return vf.Value(func(pc hiera.ProviderContext) dgo.Value {
+		return p.callPlugin(`data_hash`, name, makeOptions(pc))
+	}).(dgo.Function)
 }
 
-func (p *plugin) lookupKeyDispatch(name string) px.DispatchCreator {
-	return func(d px.Dispatch) {
-		d.Param(`Hiera::Context`)
-		d.Param(`String`)
-		d.Function(func(c px.Context, args []px.Value) px.Value {
-			params := makeOptions(args[0].(hieraapi.ServerContext))
-			params.Add(`key`, args[1].String())
-			return p.callPlugin(`lookup_key`, name, params)
-		})
-	}
+func (p *plugin) lookupKeyDispatch(name string) dgo.Function {
+	return vf.Value(func(pc hiera.ProviderContext, key string) dgo.Value {
+		params := makeOptions(pc)
+		params.Add(`key`, key)
+		return p.callPlugin(`lookup_key`, name, params)
+	}).(dgo.Function)
 }
 
-func makeOptions(sc hieraapi.ServerContext) url.Values {
+func makeOptions(pc hiera.ProviderContext) url.Values {
 	params := make(url.Values)
-	opts := make([]*types.HashEntry, 0)
-	sc.EachOption(func(k string, v px.Value) {
-		opts = append(opts, types.WrapHashEntry2(k, v))
-	})
-	if len(opts) > 0 {
+	opts := pc.OptionsMap()
+	if opts.Len() > 0 {
 		bld := bytes.Buffer{}
-		serialization.DataToJson(types.WrapHash(opts), &bld)
+		streamer.New(nil, streamer.DefaultOptions()).Stream(opts, streamer.JSON(&bld))
 		params.Add(`options`, strings.TrimSpace(bld.String()))
 	}
 	return params
 }
 
-func (p *plugin) callPlugin(luType, name string, params url.Values) px.Value {
+func (p *plugin) callPlugin(luType, name string, params url.Values) dgo.Value {
 	ad, err := url.Parse(fmt.Sprintf(`http://%s/%s/%s`, p.addr, luType, name))
 	if err != nil {
 		panic(err)
@@ -329,11 +299,10 @@ func (p *plugin) callPlugin(luType, name string, params url.Values) px.Value {
 		ad.RawQuery = params.Encode()
 	}
 	us := ad.String()
-	client := http.Client{Timeout: time.Duration(500 * time.Millisecond)}
+	client := http.Client{Timeout: 500 * time.Millisecond}
 	resp, err := client.Get(us)
 	if err != nil {
-		log.Error(err.Error())
-		return nil
+		panic(err.Error())
 	}
 
 	defer func() {
@@ -341,9 +310,10 @@ func (p *plugin) callPlugin(luType, name string, params url.Values) px.Value {
 	}()
 	switch resp.StatusCode {
 	case http.StatusOK:
-		vc := px.NewCollector()
-		serialization.JsonToData(us, resp.Body, vc)
-		return vc.Value()
+		var bts []byte
+		if bts, err = ioutil.ReadAll(resp.Body); err == nil {
+			return streamer.UnmarshalJSON(bts, nil)
+		}
 	case http.StatusNotFound:
 		return nil
 	default:
@@ -353,23 +323,40 @@ func (p *plugin) callPlugin(luType, name string, params url.Values) px.Value {
 		} else {
 			err = fmt.Errorf(`%s %s`, us, resp.Status)
 		}
-		panic(err)
 	}
+	panic(err)
 }
 
-func (l *pluginLoader) LoadEntry(c px.Context, name px.TypedName) px.LoaderEntry {
-	entry := l.DefiningLoader.LoadEntry(c, name)
-	if entry != nil {
-		return entry
-	}
+func pluginFinder(l dgo.Loader, _ string) interface{} {
+	an := l.AbsoluteName()
 
-	if name.Namespace() != px.NsFunction {
+	// Strip everything up to '/plugin/'
+	ix := strings.Index(an, `/plugin/`)
+	if ix < 0 {
 		return nil
 	}
+	return allPlugins.startPlugin(an[ix+7:])
+}
 
-	file := l.he.PluginFile()
+func pluginNamespace(l dgo.Loader, name string) dgo.Loader {
+	return loader.New(l, name, nil, pluginFinder, pluginNamespace)
+}
+
+func CreatePluginLoader(p dgo.Loader) dgo.Loader {
+	return loader.New(p, `plugin`, nil, pluginFinder, pluginNamespace)
+}
+
+func loadFunction(c hieraapi.Session, he hieraapi.Entry) (fn dgo.Function, ok bool) {
+	n := he.Function().Name()
+	l := c.Loader()
+	fn, ok = l.Namespace(`function`).Get(n).(dgo.Function)
+	if ok {
+		return
+	}
+
+	file := he.PluginFile()
 	if file == `` {
-		file = name.Name()
+		file = n
 		if runtime.GOOS == `windows` {
 			file += `.exe`
 		}
@@ -379,23 +366,22 @@ func (l *pluginLoader) LoadEntry(c px.Context, name px.TypedName) px.LoaderEntry
 	if filepath.IsAbs(file) {
 		path = filepath.Clean(file)
 	} else {
-		path = filepath.Clean(filepath.Join(l.he.PluginDir(), file))
+		path = filepath.Clean(filepath.Join(he.PluginDir(), file))
 		abs, err := filepath.Abs(path)
 		if err != nil {
 			panic(err)
 		}
 		path = abs
 	}
-	allPlugins.startPlugin(c, path, l)
-	return l.DefiningLoader.LoadEntry(c, name)
-}
 
-func loadPluginFunction(c px.Context, n string, he hieraapi.Entry) (fn px.Function, ok bool) {
-	c.DoWithLoader(NewPluginLoader(c.Loader(), he), func() {
-		var f interface{}
-		if f, ok = px.Load(c, px.NewTypedName(px.NsFunction, n)); ok {
-			fn = f.(px.Function)
+	l = l.Namespace(`plugin`)
+	for _, pn := range strings.Split(path, string(os.PathSeparator)) {
+		l = l.Namespace(pn)
+		if l == nil {
+			return nil, false
 		}
-	})
+	}
+
+	fn, ok = l.Get(n).(dgo.Function)
 	return
 }
